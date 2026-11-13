@@ -1,0 +1,117 @@
+# ITU offline chatbot — Ollama + Open WebUI + ingest job
+#
+#   docker compose up -d                      # start open-webui (connects to native Windows Ollama)
+#   docker compose run --rm ingest            # crawl approved ITU pages and sync the knowledge collection
+
+name: itu-chatbot
+
+services:
+  ollama:
+    image: ollama/ollama:${OLLAMA_TAG:-latest}
+    profiles: ["docker-ollama"]               # <-- Prevents Docker from starting this CPU container by default
+    restart: unless-stopped
+    volumes:
+      - ollama:/root/.ollama
+    environment:
+      - OLLAMA_NUM_PARALLEL=1
+      - OLLAMA_MAX_LOADED_MODELS=2
+      - OLLAMA_MAX_QUEUE=${OLLAMA_MAX_QUEUE:-16}
+      - OLLAMA_CONTEXT_LENGTH=4096
+      - OLLAMA_KEEP_ALIVE=30m
+      - OLLAMA_FLASH_ATTENTION=1
+      - OLLAMA_KV_CACHE_TYPE=q8_0
+      - OLLAMA_NO_CLOUD=1
+    networks: [internal]
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:${OPEN_WEBUI_TAG:-main}
+    restart: unless-stopped
+    # --- CHANGE 1: Commented out depends_on so Docker doesn't force-start the CPU ollama container ---
+    # depends_on:
+    #   ollama:
+    #     condition: service_healthy
+    # --- CHANGE 2: Ensure host.docker.internal resolves to your Windows host ---
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "127.0.0.1:${WEBUI_HOST_PORT:-3000}:8080"
+    volumes:
+      - open-webui:/app/backend/data
+    environment:
+      # --- identity / access ---
+      - WEBUI_NAME=${WEBUI_NAME:-ITU Assistant}
+      - WEBUI_URL=${WEBUI_URL:-http://localhost}
+      - WEBUI_SECRET_KEY=${WEBUI_SECRET_KEY:?set WEBUI_SECRET_KEY in .env}
+      - WEBUI_AUTH=True
+      - ENABLE_SIGNUP=${ENABLE_SIGNUP:-false}
+      - DEFAULT_USER_ROLE=${DEFAULT_USER_ROLE:-pending}
+      # --- CHANGE 3: Point both chat & embeddings to native Windows Ollama (Vulkan iGPU) ---
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      - ENABLE_OPENAI_API=False
+      - DEFAULT_MODELS=${DEFAULT_MODELS:-}
+      # --- RAG: embeddings served by native Ollama ---
+      - RAG_EMBEDDING_ENGINE=ollama
+      - RAG_EMBEDDING_MODEL=qwen3-embedding:0.6b
+      - RAG_OLLAMA_BASE_URL=http://host.docker.internal:11434
+      - CHUNK_SIZE=1200
+      - CHUNK_OVERLAP=100
+      - RAG_TOP_K=4
+      - RAG_TOP_K_RERANKER=4
+      - RAG_RELEVANCE_THRESHOLD=0.25
+      - RAG_HYBRID_BM25_WEIGHT=0.5
+      - ENABLE_RAG_HYBRID_SEARCH=true
+      - ENABLE_RAG_HYBRID_SEARCH_ENRICHED_TEXTS=false
+      - ENABLE_MARKDOWN_HEADER_TEXT_SPLITTER=False
+      - ENABLE_RETRIEVAL_QUERY_GENERATION=False
+      - ENABLE_SEARCH_QUERY_GENERATION=False
+      - ENABLE_TITLE_GENERATION=False
+      - ENABLE_TAGS_GENERATION=False
+      - ENABLE_FOLLOW_UP_GENERATION=False
+      - ENABLE_AUTOCOMPLETE_GENERATION=False
+      - ENABLE_PERSISTENT_CONFIG=False
+      - |
+        RAG_TEMPLATE=If the user's message is only a greeting or small talk (hi, hello, salam, thanks), reply with one short friendly sentence asking how you can help with ITU, and ignore the context below. Otherwise, answer using only the context below. If the answer is not in the context, say that you do not have verified information and suggest contacting ITU. Cite the sources.
+        <context>
+        {{CONTEXT}}
+        </context>
+      # --- offline ---
+      - OFFLINE_MODE=True
+      - HF_HUB_OFFLINE=1
+      - ENABLE_WEB_SEARCH=False
+      - ENABLE_IMAGE_GENERATION=False
+      - ENABLE_COMMUNITY_SHARING=False
+    networks: [internal, frontend]
+
+  ingest:
+    build: ./ingest
+    profiles: ["ingest"]
+    cpus: 0.5
+    depends_on: [open-webui]
+    env_file: .env
+    environment:
+      - OWUI_URL=http://open-webui:8080
+      - STATE_DIR=/state
+      - LOCAL_DOCS_DIR=/approved-docs
+    volumes:
+      - ingest-state:/state
+      - ${LOCAL_DOCS_HOST_DIR:-./approved-docs}:/approved-docs:ro
+    networks: [internal, egress]
+
+networks:
+  internal:
+    internal: true
+  frontend: {}
+  egress: {}
+
+volumes:
+  ollama:
+    name: itu-chatbot-ollama
+  open-webui:
+    name: itu-chatbot-open-webui
+  ingest-state:
+    name: itu-chatbot-ingest-state

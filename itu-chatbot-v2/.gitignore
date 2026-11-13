@@ -1,0 +1,9 @@
+.env*
+*.bak
+*.bak_*
+bundle-*/
+__pycache__/
+_removed_backup/
+scripts/ingest_approved_docs.py
+
+

@@ -1,0 +1,10 @@
+[Unit]
+Description=Sync approved ITU content into the Open WebUI knowledge collection
+After=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/itu-chatbot
+ExecStart=/usr/bin/docker compose run --rm ingest
+TimeoutStartSec=6h
